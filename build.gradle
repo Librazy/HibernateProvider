@@ -1,0 +1,42 @@
+plugins {
+    id 'java'
+}
+
+configurations.all {
+    resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
+}
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+repositories {
+    jcenter()
+    maven {
+        name 'spigot-repo'
+        url 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/'
+    }
+
+    maven {
+        name 'sonatype'
+        url 'https://oss.sonatype.org/content/groups/public'
+    }
+
+    maven {
+        name 'NyaaCore'
+        url 'https://raw.githubusercontent.com/NyaaCat/NyaaCore/maven-repo-dev'
+    }
+}
+
+dependencies {
+    compile 'org.hibernate:hibernate-core:5.2.12.Final'
+    compile 'org.spigotmc:spigot-api:1.12-R0.1-SNAPSHOT'
+    compile('cat.nyaa:nyaacore:4.2-SNAPSHOT') {
+        transitive = false
+    }
+    compile 'com.h2database:h2:1.4.196'
+    testRuntimeClasspath 'com.h2database:h2:1.4.196'
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = "UTF-8"
+}

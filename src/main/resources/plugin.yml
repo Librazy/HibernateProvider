@@ -1,0 +1,5 @@
+name: HibernateProvider
+version: 1.0
+main: org.librazy.provider.hibernate.Main
+depend: [NyaaCore]
+authors: [Librazy]
