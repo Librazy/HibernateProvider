@@ -5,10 +5,10 @@ before_install:
 - git config --global user.name "Travis CI"
 - 'sed -i "s/^\(version: \).*$/\1$main_version.$TRAVIS_BUILD_NUMBER/g" src/main/resources/plugin.yml'
 after_success:
-- gradle shadowJar
-- 'cp build/libs/$archivesBaseName-all.jar ./$archivesBaseName-$TRAVIS_BRANCH-v$main_version.$TRAVIS_BUILD_NUMBER.jar'
+- ./gradlew shadowJar
+- 'cp build/libs/$archivesBaseName-all.jar ./$archivesBaseName-v$main_version.$TRAVIS_BUILD_NUMBER.jar'
 before_deploy:
-- export GIT_TAG=$TRAVIS_BRANCH-v$main_version.$TRAVIS_BUILD_NUMBER
+- export GIT_TAG=v$main_version.$TRAVIS_BUILD_NUMBER
 - export GIT_ORIGIN_URL=`git config --get remote.origin.url`
 - git tag $GIT_TAG -a -m "Generated tag from TravisCI for build $TRAVIS_BUILD_NUMBER"
 - git config credential.helper "store --file=.git/credentials"
@@ -22,11 +22,12 @@ deploy:
   api_key: ${GITHUB_KEY}
   file: './$archivesBaseName-v$main_version.$TRAVIS_BUILD_NUMBER.jar'
   on:
-    tags: false
-    all_branches: true
+    branch: master
+
 branches:
   except:
   - "/^*-v[0-9]/"
+  - "/^v[0-9]/"
 env:
   global:
     - main_version=1
