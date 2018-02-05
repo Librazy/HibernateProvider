@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'com.github.johnrengelman.shadow' version '2.0.2'
 }
 
 configurations.all {
@@ -17,6 +18,7 @@ repositories {
     }
 
     maven {
+
         name 'sonatype'
         url 'https://oss.sonatype.org/content/groups/public'
     }
@@ -35,6 +37,19 @@ dependencies {
     }
     compile 'com.h2database:h2:1.4.196'
     testRuntimeClasspath 'com.h2database:h2:1.4.196'
+}
+
+shadowJar {
+    dependencies {
+        include(dependency {
+            it.moduleGroup.startsWith('org.hibernate') ||
+            it.moduleGroup.startsWith('org.jboss') ||
+            it.moduleGroup == 'antlr' ||
+            it.moduleGroup == 'com.fasterxml' ||
+            it.moduleGroup == 'dom4j' ||
+            it.moduleGroup == 'org.javassist'
+        })
+    }
 }
 
 tasks.withType(JavaCompile) {

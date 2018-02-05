@@ -8,14 +8,12 @@ import org.apache.commons.lang.Validate;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
-import org.hibernate.boot.Metadata;
 import org.hibernate.boot.MetadataSources;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
 import org.hibernate.cfg.Configuration;
-import org.hibernate.mapping.Column;
-import org.hibernate.mapping.PersistentClass;
 import org.hibernate.metadata.ClassMetadata;
 import org.hibernate.metamodel.spi.MetamodelImplementor;
+import org.hibernate.persister.entity.AbstractEntityPersister;
 import org.hibernate.service.ServiceRegistry;
 import org.hibernate.tool.hbm2ddl.SchemaExport;
 import org.hibernate.tool.hbm2ddl.SchemaUpdate;
@@ -29,7 +27,7 @@ public class HibernateDatabase implements RelationalDB {
     private ServiceRegistry serviceRegistry;
     private final Properties properties;
     private List<Class<?>> classes;
-    public HibernateDatabase(Properties properties, List<Class<?>> classes)
+    HibernateDatabase(Properties properties, List<Class<?>> classes)
     {
         this.properties = properties;
         this.classes = new ArrayList<>(classes);
@@ -89,13 +87,23 @@ public class HibernateDatabase implements RelationalDB {
 
     public class HibernateQuery<T> implements Query<T> {
         private HashBasedTable<String, String, Object> where = HashBasedTable.create();
-        private final HibernateDatabase database;
         private Class<T> cls;
         private Session session;
+        private Map<String, String> columnMapping = new HashMap<>();
         HibernateQuery(HibernateDatabase database, Class<T> cls){
-            this.database = database;
             this.cls = cls;
             session = database.sessionFactory.openSession();
+            MetamodelImplementor metamodel = (MetamodelImplementor) sessionFactory.getMetamodel();
+            AbstractEntityPersister classMetadata = (AbstractEntityPersister) metamodel.entityPersister(cls);
+            String[] props = classMetadata.getPropertyNames();
+            String id = classMetadata.getIdentifierPropertyName();
+            columnMapping.put(id, id);
+            columnMapping.put(classMetadata.getIdentifierColumnNames()[0], id);
+            for(String prop: props){
+                String[] names = classMetadata.getPropertyColumnNames(prop);
+                columnMapping.put(names[0], prop);
+                columnMapping.put(prop, prop);
+            }
         }
 
         @Override
@@ -111,7 +119,8 @@ public class HibernateDatabase implements RelationalDB {
 
         @Override
         public Query<T> where(String columnName, String comparator, Object obj) {
-            where.put(comparator, columnName, obj);
+            Validate.notNull(columnMapping.get(columnName), "No suitable column or property found for '" + columnName + "'");
+            where.put(comparator, columnMapping.get(columnName), obj);
             return this;
         }
 
