@@ -14,7 +14,7 @@ public class HibernateProvider implements DatabaseProvider {
     @Override
     public Database get(Plugin plugin, Map<String, Object> map) {
         Properties props = new Properties();
-        props.put("hibernate.dialect", "org.hibernate.dialect.MySQL57Dialect");
+        props.put("hibernate.dialect", map.get("dialect") == null ? "org.hibernate.dialect.MySQL57Dialect" : map.get("dialect"));
         props.put("hibernate.connection.driver_class", map.get("jdbc") == null ? "com.mysql.jdbc.Driver" : map.get("jdbc"));
         props.put("hibernate.connection.url", map.get("url"));
         props.put("hibernate.connection.username", map.get("username"));

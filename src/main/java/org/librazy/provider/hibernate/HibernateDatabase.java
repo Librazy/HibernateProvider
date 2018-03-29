@@ -114,7 +114,7 @@ public class HibernateDatabase implements RelationalDB {
     }
 
     public class HibernateQuery<T> implements Query<T> {
-        private HashBasedTable<String, String, Object> where = HashBasedTable.create();
+        private final HashBasedTable<String, String, Object> where = HashBasedTable.create();
         private final Class<T> cls;
         private final Session session;
         private final Transaction transaction;
