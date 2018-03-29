@@ -5,6 +5,7 @@ import cat.nyaa.nyaacore.database.Query;
 import cat.nyaa.nyaacore.database.RelationalDB;
 import com.google.common.collect.HashBasedTable;
 import org.apache.commons.lang.Validate;
+import org.hibernate.FlushMode;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
@@ -19,6 +20,7 @@ import org.hibernate.tool.hbm2ddl.SchemaExport;
 import org.hibernate.tool.hbm2ddl.SchemaUpdate;
 import org.hibernate.tool.schema.TargetType;
 
+import javax.persistence.FlushModeType;
 import javax.persistence.criteria.*;
 import java.util.*;
 
@@ -27,15 +29,17 @@ public class HibernateDatabase implements RelationalDB {
     private ServiceRegistry serviceRegistry;
     private final Properties properties;
     private List<Class<?>> classes;
-    HibernateDatabase(Properties properties, List<Class<?>> classes)
-    {
+    private Session session;
+    private Transaction transaction;
+
+    HibernateDatabase(Properties properties, List<Class<?>> classes) {
         this.properties = properties;
         this.classes = new ArrayList<>(classes);
         rebuild();
     }
 
     private void rebuild() {
-        if(sessionFactory != null) sessionFactory.close();
+        if (sessionFactory != null) sessionFactory.close();
         Configuration hibernateConfig = new Configuration().setProperties(properties);
         if (classes != null) {
             for (Class<?> cls :
@@ -49,7 +53,7 @@ public class HibernateDatabase implements RelationalDB {
 
     @Override
     public <T> Query<T> query(Class<T> cls) {
-        return new HibernateQuery<>(this, cls);
+        return new HibernateQuery<>(this, cls, session, transaction);
     }
 
     @Override
@@ -74,6 +78,30 @@ public class HibernateDatabase implements RelationalDB {
     }
 
     @Override
+    public synchronized void enableAutoCommit() {
+        if (transaction != null) {
+            session.flush();
+            transaction.commit();
+        } else {
+            throw new IllegalStateException("No transaction found in this database");
+        }
+        session.close();
+        session = null;
+        transaction = null;
+    }
+
+    @Override
+    public synchronized void disableAutoCommit() {
+        if (transaction != null) {
+            throw new IllegalStateException("Another transaction is in progress");
+        }
+        session = sessionFactory.openSession();
+        session.setHibernateFlushMode(FlushMode.MANUAL);
+        session.setFlushMode(FlushModeType.COMMIT);
+        transaction = session.beginTransaction();
+    }
+
+    @Override
     @SuppressWarnings("unchecked")
     public <T extends Database> T connect() {
         Validate.isTrue(sessionFactory.isOpen());
@@ -87,19 +115,26 @@ public class HibernateDatabase implements RelationalDB {
 
     public class HibernateQuery<T> implements Query<T> {
         private HashBasedTable<String, String, Object> where = HashBasedTable.create();
-        private Class<T> cls;
-        private Session session;
+        private final Class<T> cls;
+        private final Session session;
+        private final Transaction transaction;
         private Map<String, String> columnMapping = new HashMap<>();
-        HibernateQuery(HibernateDatabase database, Class<T> cls){
+
+        HibernateQuery(HibernateDatabase database, Class<T> cls, Session session, Transaction transaction) {
             this.cls = cls;
-            session = database.sessionFactory.openSession();
+            this.transaction = transaction;
+            if (session == null) {
+                this.session = database.sessionFactory.openSession();
+            } else {
+                this.session = session;
+            }
             MetamodelImplementor metamodel = (MetamodelImplementor) sessionFactory.getMetamodel();
             AbstractEntityPersister classMetadata = (AbstractEntityPersister) metamodel.entityPersister(cls);
             String[] props = classMetadata.getPropertyNames();
             String id = classMetadata.getIdentifierPropertyName();
             columnMapping.put(id, id);
             columnMapping.put(classMetadata.getIdentifierColumnNames()[0], id);
-            for(String prop: props){
+            for (String prop : props) {
                 String[] names = classMetadata.getPropertyColumnNames(prop);
                 columnMapping.put(names[0], prop);
                 columnMapping.put(prop, prop);
@@ -126,61 +161,103 @@ public class HibernateDatabase implements RelationalDB {
 
         @Override
         public void delete() {
-            Transaction transaction = session.beginTransaction();
-            CriteriaBuilder cb = session.getCriteriaBuilder();
-            CriteriaDelete<T> cd = cb.createCriteriaDelete(cls);
-            Root<T> root = cd.from(cls);
-            where.cellSet().forEach(cell ->{
-                switch (Objects.requireNonNull(cell.getRowKey())){
-                    case "=":{
-                        cd.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
-                    } break;
-                    case ">":{
-                        cd.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                    } break;
-                    case "<":{
-                        cd.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                    } break;
+            Transaction transaction;
+            if (this.transaction != null) {
+                transaction = this.transaction;
+            } else {
+                transaction = session.beginTransaction();
+            }
+            try {
+                CriteriaBuilder cb = session.getCriteriaBuilder();
+                CriteriaDelete<T> cd = cb.createCriteriaDelete(cls);
+                Root<T> root = cd.from(cls);
+                where.cellSet().forEach(cell -> {
+                    switch (Objects.requireNonNull(cell.getRowKey())) {
+                        case "=": {
+                            cd.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                        }
+                        break;
+                        case ">": {
+                            cd.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case "<": {
+                            cd.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                    }
+                });
+                session.createQuery(cd).executeUpdate();
+                if (this.transaction == null) {
+                    transaction.commit();
                 }
-            });
-            session.createQuery(cd).executeUpdate();
-            transaction.commit();
+            } catch (Exception e) {
+                transaction.rollback();
+                throw e;
+            } finally {
+                session.close();
+            }
         }
 
         @Override
         public void insert(T t) {
-            Transaction transaction = session.beginTransaction();
-            session.persist(t);
-            transaction.commit();
+            Transaction transaction;
+            if (this.transaction != null) {
+                transaction = this.transaction;
+            } else {
+                transaction = session.beginTransaction();
+            }
+            try {
+                session.persist(t);
+                if (this.transaction == null) {
+                    transaction.commit();
+                }
+            } catch (Exception e) {
+                transaction.rollback();
+                throw e;
+            } finally {
+                session.close();
+            }
         }
 
         @Override
         public List<T> select() {
-            CriteriaQuery<T> cq = createQuery();
-            return session.createQuery(cq).getResultList();
+            try {
+                CriteriaQuery<T> cq = createQuery();
+                return session.createQuery(cq).getResultList();
+            } finally {
+                session.close();
+            }
         }
 
         @Override
         public T selectUnique() {
-            CriteriaQuery<T> cq = createQuery();
-            return session.createQuery(cq).uniqueResult();
+            try {
+                CriteriaQuery<T> cq = createQuery();
+                return session.createQuery(cq).uniqueResult();
+            } finally {
+                session.close();
+            }
         }
 
         private CriteriaQuery<T> createQuery() {
             CriteriaBuilder cb = session.getCriteriaBuilder();
             CriteriaQuery<T> cq = cb.createQuery(cls);
             Root<T> root = cq.from(cls);
-            where.cellSet().forEach(cell ->{
-                switch (Objects.requireNonNull(cell.getRowKey())){
-                    case ">":{
+            where.cellSet().forEach(cell -> {
+                switch (Objects.requireNonNull(cell.getRowKey())) {
+                    case ">": {
                         cq.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                    } break;
-                    case "<":{
+                    }
+                    break;
+                    case "<": {
                         cq.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                    } break;
-                    case "=":{
+                    }
+                    break;
+                    case "=": {
                         cq.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
-                    } break;
+                    }
+                    break;
                 }
             });
             return cq;
@@ -188,57 +265,80 @@ public class HibernateDatabase implements RelationalDB {
 
         @Override
         public int count() {
-            CriteriaBuilder cb = session.getCriteriaBuilder();
-            CriteriaQuery<Long> q = cb.createQuery(Long.class);
-            Root<T> root = q.from(cls);
-            where.cellSet().forEach(cell ->{
-                switch (Objects.requireNonNull(cell.getRowKey())){
-                    case "<":{
-                        q.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                    } break;
-                    case ">":{
-                        q.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                    } break;
-                    case "=":{
-                        q.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
-                    } break;
-                }
-            });
-            q.select(cb.count(root));
-            return session.createQuery(q).uniqueResult().intValue();
+            try {
+                CriteriaBuilder cb = session.getCriteriaBuilder();
+                CriteriaQuery<Long> q = cb.createQuery(Long.class);
+                Root<T> root = q.from(cls);
+                where.cellSet().forEach(cell -> {
+                    switch (Objects.requireNonNull(cell.getRowKey())) {
+                        case "<": {
+                            q.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case ">": {
+                            q.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case "=": {
+                            q.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                        }
+                        break;
+                    }
+                });
+                q.select(cb.count(root));
+                return session.createQuery(q).uniqueResult().intValue();
+            } finally {
+                session.close();
+            }
         }
 
         @Override
         public void update(T t, String... columns) {
-            Transaction transaction = session.beginTransaction();
-            CriteriaBuilder cb = session.getCriteriaBuilder();
-            CriteriaUpdate<T> cu = cb.createCriteriaUpdate(cls);
-            Root<T> root = cu.from(cls);
-            where.cellSet().forEach(cell ->{
-                switch (Objects.requireNonNull(cell.getRowKey())){
-                    case "<":{
-                        cu.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                    } break;
-                    case "=":{
-                        cu.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
-                    } break;
-                    case ">":{
-                        cu.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                    } break;
-                }
-            });
-            MetamodelImplementor metamodel = (MetamodelImplementor) sessionFactory.getMetamodel();
-            ClassMetadata classMetadata = (ClassMetadata) metamodel.entityPersister(cls);
-            List<String> cols = Arrays.asList(columns);
-            String[] props = classMetadata.getPropertyNames();
-            for(String prop: props){
-                if(cols.isEmpty() || cols.contains(prop)){
-                    cu.set(prop, classMetadata.getPropertyValue(t, prop));
-                }
+            Transaction transaction;
+            if (this.transaction != null) {
+                transaction = this.transaction;
+            } else {
+                transaction = session.beginTransaction();
             }
-            session.createQuery(cu).executeUpdate();
-            transaction.commit();
+            try {
+                CriteriaBuilder cb = session.getCriteriaBuilder();
+                CriteriaUpdate<T> cu = cb.createCriteriaUpdate(cls);
+                Root<T> root = cu.from(cls);
+                where.cellSet().forEach(cell -> {
+                    switch (Objects.requireNonNull(cell.getRowKey())) {
+                        case "<": {
+                            cu.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case "=": {
+                            cu.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                        }
+                        break;
+                        case ">": {
+                            cu.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                    }
+                });
+                MetamodelImplementor metamodel = (MetamodelImplementor) sessionFactory.getMetamodel();
+                ClassMetadata classMetadata = (ClassMetadata) metamodel.entityPersister(cls);
+                List<String> cols = Arrays.asList(columns);
+                String[] props = classMetadata.getPropertyNames();
+                for (String prop : props) {
+                    if (cols.isEmpty() || cols.contains(prop)) {
+                        cu.set(prop, classMetadata.getPropertyValue(t, prop));
+                    }
+                }
+                session.createQuery(cu).executeUpdate();
+                if (this.transaction == null) {
+                    transaction.commit();
+                }
+            } catch (Exception e) {
+                transaction.rollback();
+                throw e;
+            } finally {
+                session.close();
+            }
         }
-
     }
 }
