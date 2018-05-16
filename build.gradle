@@ -30,6 +30,7 @@ repositories {
 
 dependencies {
     compile 'org.hibernate:hibernate-core:5.3.0.Beta1'
+    compile 'org.hibernate:hibernate-c3p0:5.3.0.Beta1'
     compile 'cat.nyaa:nyaacore:5.0-SNAPSHOT'
     testCompile 'com.h2database:h2:1.4.196'
 }
@@ -39,6 +40,7 @@ shadowJar {
         include(dependency {
             it.moduleGroup.startsWith('org.hibernate') ||
             it.moduleGroup.startsWith('org.jboss') ||
+            it.moduleGroup.startsWith('com.mchange') ||
             it.moduleGroup == 'antlr' ||
             it.moduleGroup == 'com.fasterxml' ||
             it.moduleGroup == 'dom4j' ||

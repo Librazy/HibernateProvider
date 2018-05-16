@@ -2,6 +2,7 @@ package org.librazy.provider.hibernate;
 
 import cat.nyaa.nyaacore.database.DatabaseUtils;
 import cat.nyaa.nyaacore.database.RelationalDB;
+import cat.nyaa.nyaacore.database.TransactionalQuery;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -13,7 +14,7 @@ import java.util.UUID;
 
 public class HibernateProviderTest {
     @BeforeClass
-    public static void register(){
+    public static void register() {
         DatabaseUtils.registerProvider("hibernate", new HibernateProvider());
     }
 
@@ -55,7 +56,7 @@ public class HibernateProviderTest {
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
         db.connect();
         TestEntity testEntity = new TestEntity().setTest("t1");
-        db.query(TestEntity.class).insert(testEntity);
+        db.auto(TestEntity.class).insert(testEntity);
         db.close();
     }
 
@@ -71,9 +72,11 @@ public class HibernateProviderTest {
         db.connect();
         db.createTable(TestEntity.class);
         TestEntity testEntity = new TestEntity().setTest("t1");
+        db.beginTransaction();
+        db.query(TestEntity.class).delete();
         db.query(TestEntity.class).insert(testEntity);
         List<TestEntity> entities = db.query(TestEntity.class).select();
-        Assert.assertEquals(entities.size(), 1);
+        Assert.assertEquals(1, entities.size());
         Assert.assertEquals(db.query(TestEntity.class).whereEq("test", "t1").count(), 1);
         db.close();
     }
@@ -89,15 +92,16 @@ public class HibernateProviderTest {
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
         db.connect();
         db.createTable(TestEntity.class);
+        db.auto(TestEntity.class).delete();
         TestEntity testEntity = new TestEntity().setTest("t1");
         TestEntity testEntity2 = new TestEntity().setTest("t2");
         TestEntity testEntity3 = new TestEntity().setTest("t2");
-        db.query(TestEntity.class).insert(testEntity);
-        db.query(TestEntity.class).insert(testEntity2);
-        db.query(TestEntity.class).insert(testEntity3);
-        List<TestEntity> entities = db.query(TestEntity.class).select();
+        db.auto(TestEntity.class).insert(testEntity);
+        db.auto(TestEntity.class).insert(testEntity2);
+        db.auto(TestEntity.class).insert(testEntity3);
+        List<TestEntity> entities = db.auto(TestEntity.class).select();
         Assert.assertEquals(entities.size(), 3);
-        Assert.assertEquals(db.query(TestEntity.class).whereEq("test", "t1").selectUnique().getTest(), "t1");
+        Assert.assertEquals(db.auto(TestEntity.class).whereEq("test", "t1").selectUnique().getTest(), "t1");
         db.close();
     }
 
@@ -118,13 +122,15 @@ public class HibernateProviderTest {
         TestEntity testEntity4 = new TestEntity().setTest("t3");
         UUID uid = UUID.randomUUID();
         TestEntity testEntity5 = new TestEntity().setTest("t2").setUuid(uid);
+        db.beginTransaction();
         db.query(TestEntity.class).insert(testEntity);
         db.query(TestEntity.class).insert(testEntity2);
         db.query(TestEntity.class).insert(testEntity3);
         db.query(TestEntity.class).insert(testEntity4);
         db.query(TestEntity.class).whereEq("test", "t2").update(testEntity5);
         Assert.assertEquals(db.query(TestEntity.class).whereEq("test", "t2").count(), 2);
-        Assert.assertEquals(db.query(TestEntity.class).whereEq("test", "t2").select().stream().filter(s -> s.getUuid().equals(uid)).count(), 2);
+        db.commitTransaction();
+        Assert.assertEquals(db.auto(TestEntity.class).whereEq("test", "t2").select().stream().filter(s -> s.getUuid().equals(uid)).count(), 2);
         db.close();
     }
 
@@ -143,13 +149,15 @@ public class HibernateProviderTest {
         TestEntity testEntity2 = new TestEntity().setTest("t2");
         TestEntity testEntity3 = new TestEntity().setTest("t2");
         TestEntity testEntity4 = new TestEntity().setTest("t3");
-        db.query(TestEntity.class).insert(testEntity);
-        db.query(TestEntity.class).insert(testEntity2);
-        db.query(TestEntity.class).insert(testEntity3);
-        db.query(TestEntity.class).insert(testEntity4);
-        db.query(TestEntity.class).whereEq("test", "t2").delete();
-        Assert.assertEquals(db.query(TestEntity.class).whereEq("test", "t2").count(), 0);
-        Assert.assertEquals(db.query(TestEntity.class).select().size(), 2);
+        try (TransactionalQuery<TestEntity> transaction = db.transaction(TestEntity.class)) {
+            db.query(TestEntity.class).insert(testEntity);
+            db.query(TestEntity.class).insert(testEntity2);
+            db.query(TestEntity.class).insert(testEntity3);
+            db.query(TestEntity.class).insert(testEntity4);
+            db.query(TestEntity.class).whereEq("test", "t2").delete();
+            Assert.assertEquals(db.query(TestEntity.class).whereEq("test", "t2").count(), 0);
+            Assert.assertEquals(transaction.select().size(), 2);
+        }
         db.close();
     }
 }

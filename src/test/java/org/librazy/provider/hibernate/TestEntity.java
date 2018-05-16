@@ -8,7 +8,7 @@ import java.util.Date;
 import java.util.UUID;
 
 @Entity
-@Table(name = "TIMEKEEPER")
+@Table(name = "TestEntity")
 public class TestEntity {
 
     private String test;

@@ -1,8 +1,6 @@
 package org.librazy.provider.hibernate;
 
-import cat.nyaa.nyaacore.database.Database;
-import cat.nyaa.nyaacore.database.Query;
-import cat.nyaa.nyaacore.database.RelationalDB;
+import cat.nyaa.nyaacore.database.*;
 import com.google.common.collect.HashBasedTable;
 import org.apache.commons.lang.Validate;
 import org.hibernate.FlushMode;
@@ -12,6 +10,7 @@ import org.hibernate.Transaction;
 import org.hibernate.boot.MetadataSources;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
 import org.hibernate.cfg.Configuration;
+import org.hibernate.context.internal.ThreadLocalSessionContext;
 import org.hibernate.metadata.ClassMetadata;
 import org.hibernate.metamodel.spi.MetamodelImplementor;
 import org.hibernate.persister.entity.AbstractEntityPersister;
@@ -22,7 +21,12 @@ import org.hibernate.tool.schema.TargetType;
 
 import javax.persistence.FlushModeType;
 import javax.persistence.criteria.*;
+import java.io.PrintStream;
+import java.io.ByteArrayOutputStream;
+import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.logging.Logger;
 
 public class HibernateDatabase implements RelationalDB {
     private SessionFactory sessionFactory;
@@ -31,8 +35,9 @@ public class HibernateDatabase implements RelationalDB {
     private List<Class<?>> classes;
     private Session session;
     private Transaction transaction;
-
-    HibernateDatabase(Properties properties, List<Class<?>> classes) {
+    private Logger log = Logger.getLogger("HibernateProvider");
+    HibernateDatabase(Properties properties, List<Class<?>> classes, Logger logger) {
+        if(logger != null) log = logger;
         this.properties = properties;
         this.classes = new ArrayList<>(classes);
         rebuild();
@@ -53,7 +58,21 @@ public class HibernateDatabase implements RelationalDB {
 
     @Override
     public <T> Query<T> query(Class<T> cls) {
-        return new HibernateQuery<>(this, cls, session, transaction);
+        return new HibernateQuery<>(this, cls, false, false, session, transaction);
+    }
+
+    @Override
+    public <T> TransactionalQuery<T> transaction(Class<T> cls) {
+        return new HibernateQuery<>(this, cls, true, true, null, null);
+    }
+
+    @Override
+    public <T> Query<T> auto(Class<T> cls) {
+        if (session != null) {
+            return new AutoQuery<>(new HibernateQuery<>(this, cls, false, false, session, transaction));
+        } else {
+            return new AutoQuery<>(new HibernateQuery<>(this, cls, true, false, null, null));
+        }
     }
 
     @Override
@@ -77,21 +96,23 @@ public class HibernateDatabase implements RelationalDB {
         rebuild();
     }
 
+    @Deprecated
     @Override
-    public synchronized void enableAutoCommit() {
-        if (transaction != null) {
+    public synchronized void commitTransaction() {
+        if (transaction != null && transaction.isActive()) {
             session.flush();
             transaction.commit();
         } else {
-            throw new IllegalStateException("No transaction found in this database");
+            throw new IllegalStateException("No transaction found in this database or is not active");
         }
         session.close();
         session = null;
         transaction = null;
     }
 
+    @Deprecated
     @Override
-    public synchronized void disableAutoCommit() {
+    public synchronized void beginTransaction() {
         if (transaction != null) {
             throw new IllegalStateException("Another transaction is in progress");
         }
@@ -99,6 +120,20 @@ public class HibernateDatabase implements RelationalDB {
         session.setHibernateFlushMode(FlushMode.MANUAL);
         session.setFlushMode(FlushModeType.COMMIT);
         transaction = session.beginTransaction();
+    }
+
+    @Deprecated
+    @Override
+    public synchronized void rollbackTransaction() {
+        if (transaction != null && transaction.isActive()) {
+            transaction.setRollbackOnly();
+            transaction.rollback();
+        } else {
+            throw new IllegalStateException("No transaction found in this database or is not active");
+        }
+        session.close();
+        session = null;
+        transaction = null;
     }
 
     @Override
@@ -110,23 +145,42 @@ public class HibernateDatabase implements RelationalDB {
 
     @Override
     public void close() {
+        if (transaction != null && transaction.isActive()) {
+            if (transaction.getRollbackOnly()) {
+                transaction.rollback();
+            } else {
+                transaction.commit();
+            }
+        }
+        if (session != null) {
+            session.close();
+
+        }
         sessionFactory.close();
     }
 
-    public class HibernateQuery<T> implements Query<T> {
+    public class HibernateQuery<T> implements TransactionalQuery<T> {
         private final HashBasedTable<String, String, Object> where = HashBasedTable.create();
         private final Class<T> cls;
+        private final boolean managed;
+        private final boolean bind;
         private final Session session;
         private final Transaction transaction;
         private Map<String, String> columnMapping = new HashMap<>();
 
-        HibernateQuery(HibernateDatabase database, Class<T> cls, Session session, Transaction transaction) {
+        HibernateQuery(HibernateDatabase database, Class<T> cls, boolean newTrans, boolean bind, Session session, Transaction transaction) {
             this.cls = cls;
-            this.transaction = transaction;
-            if (session == null) {
+            this.managed = session != null;
+            this.bind = bind;
+            if (newTrans) {
                 this.session = database.sessionFactory.openSession();
+                if (bind) ThreadLocalSessionContext.bind(this.session);
+                this.transaction = this.session.beginTransaction();
+                this.session.setHibernateFlushMode(FlushMode.MANUAL);
+                this.session.setFlushMode(FlushModeType.COMMIT);
             } else {
-                this.session = session;
+                this.session = session == null ? database.sessionFactory.getCurrentSession() : session;
+                this.transaction = transaction == null ? this.session.getTransaction() : transaction;
             }
             MetamodelImplementor metamodel = (MetamodelImplementor) sessionFactory.getMetamodel();
             AbstractEntityPersister classMetadata = (AbstractEntityPersister) metamodel.entityPersister(cls);
@@ -142,31 +196,36 @@ public class HibernateDatabase implements RelationalDB {
         }
 
         @Override
-        public Query<T> clear() {
+        public TransactionalQuery<T> clear() {
             where.clear();
             return this;
         }
 
         @Override
-        public Query<T> whereEq(String columnName, Object obj) {
+        public TransactionalQuery<T> whereEq(String columnName, Object obj) {
             return where(columnName, "=", obj);
         }
 
         @Override
-        public Query<T> where(String columnName, String comparator, Object obj) {
+        public TransactionalQuery<T> where(String columnName, String comparator, Object obj) {
             Validate.notNull(columnMapping.get(columnName), "No suitable column or property found for '" + columnName + "'");
             where.put(comparator, columnMapping.get(columnName), obj);
             return this;
         }
 
         @Override
+        public void rollback() {
+            transaction.setRollbackOnly();
+            transaction.rollback();
+        }
+
+        @Override
+        public void commit() {
+            transaction.commit();
+        }
+
+        @Override
         public void delete() {
-            Transaction transaction;
-            if (this.transaction != null) {
-                transaction = this.transaction;
-            } else {
-                transaction = session.beginTransaction();
-            }
             try {
                 CriteriaBuilder cb = session.getCriteriaBuilder();
                 CriteriaDelete<T> cd = cb.createCriteriaDelete(cls);
@@ -174,7 +233,13 @@ public class HibernateDatabase implements RelationalDB {
                 where.cellSet().forEach(cell -> {
                     switch (Objects.requireNonNull(cell.getRowKey())) {
                         case "=": {
-                            cd.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                            Class<?> t = root.get(cell.getColumnKey()).type().getJavaType();
+                            Class<?> s = Objects.requireNonNull(cell.getValue()).getClass();
+                            if (t == UUID.class && s == String.class) {
+                                cd.where(cb.equal(root.get(cell.getColumnKey()), UUID.fromString((String) cell.getValue())));
+                            } else {
+                                cd.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                            }
                         }
                         break;
                         case ">": {
@@ -188,56 +253,43 @@ public class HibernateDatabase implements RelationalDB {
                     }
                 });
                 session.createQuery(cd).executeUpdate();
-                if (this.transaction == null) {
-                    transaction.commit();
-                }
             } catch (Exception e) {
-                transaction.rollback();
+                transaction.setRollbackOnly();
                 throw e;
-            } finally {
-                session.close();
             }
         }
 
         @Override
         public void insert(T t) {
-            Transaction transaction;
-            if (this.transaction != null) {
-                transaction = this.transaction;
-            } else {
-                transaction = session.beginTransaction();
-            }
             try {
                 session.persist(t);
-                if (this.transaction == null) {
-                    transaction.commit();
-                }
+                session.flush();
             } catch (Exception e) {
-                transaction.rollback();
+                transaction.setRollbackOnly();
                 throw e;
-            } finally {
-                session.close();
             }
         }
 
         @Override
         public List<T> select() {
-            try {
-                CriteriaQuery<T> cq = createQuery();
-                return session.createQuery(cq).getResultList();
-            } finally {
-                session.close();
-            }
+            CriteriaQuery<T> cq = createQuery();
+            return session.createQuery(cq).getResultList();
         }
 
         @Override
         public T selectUnique() {
-            try {
-                CriteriaQuery<T> cq = createQuery();
-                return session.createQuery(cq).uniqueResult();
-            } finally {
-                session.close();
+            CriteriaQuery<T> cq = createQuery();
+            return session.createQuery(cq).uniqueResult();
+        }
+
+        @Override
+        public T selectUniqueUnchecked() {
+            CriteriaQuery<T> cq = createQuery();
+            List<T> list = session.createQuery(cq).getResultList();
+            if (list.size() != 1) {
+                return null;
             }
+            return list.get(0);
         }
 
         private CriteriaQuery<T> createQuery() {
@@ -255,7 +307,13 @@ public class HibernateDatabase implements RelationalDB {
                     }
                     break;
                     case "=": {
-                        cq.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                        Class<?> t = root.get(cell.getColumnKey()).type().getJavaType();
+                        Class<?> s = Objects.requireNonNull(cell.getValue()).getClass();
+                        if (t == UUID.class && s == String.class) {
+                            cq.where(cb.equal(root.get(cell.getColumnKey()), UUID.fromString((String) cell.getValue())));
+                        } else {
+                            cq.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                        }
                     }
                     break;
                 }
@@ -265,41 +323,37 @@ public class HibernateDatabase implements RelationalDB {
 
         @Override
         public int count() {
-            try {
-                CriteriaBuilder cb = session.getCriteriaBuilder();
-                CriteriaQuery<Long> q = cb.createQuery(Long.class);
-                Root<T> root = q.from(cls);
-                where.cellSet().forEach(cell -> {
-                    switch (Objects.requireNonNull(cell.getRowKey())) {
-                        case "<": {
-                            q.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                        }
-                        break;
-                        case ">": {
-                            q.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
-                        }
-                        break;
-                        case "=": {
+            CriteriaBuilder cb = session.getCriteriaBuilder();
+            CriteriaQuery<Long> q = cb.createQuery(Long.class);
+            Root<T> root = q.from(cls);
+            where.cellSet().forEach(cell -> {
+                switch (Objects.requireNonNull(cell.getRowKey())) {
+                    case "<": {
+                        q.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                    }
+                    break;
+                    case ">": {
+                        q.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                    }
+                    break;
+                    case "=": {
+                        Class<?> t = root.get(cell.getColumnKey()).type().getJavaType();
+                        Class<?> s = Objects.requireNonNull(cell.getValue()).getClass();
+                        if (t == UUID.class && s == String.class) {
+                            q.where(cb.equal(root.get(cell.getColumnKey()), UUID.fromString((String) cell.getValue())));
+                        } else {
                             q.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
                         }
-                        break;
                     }
-                });
-                q.select(cb.count(root));
-                return session.createQuery(q).uniqueResult().intValue();
-            } finally {
-                session.close();
-            }
+                    break;
+                }
+            });
+            q.select(cb.count(root));
+            return session.createQuery(q).uniqueResult().intValue();
         }
 
         @Override
         public void update(T t, String... columns) {
-            Transaction transaction;
-            if (this.transaction != null) {
-                transaction = this.transaction;
-            } else {
-                transaction = session.beginTransaction();
-            }
             try {
                 CriteriaBuilder cb = session.getCriteriaBuilder();
                 CriteriaUpdate<T> cu = cb.createCriteriaUpdate(cls);
@@ -311,11 +365,21 @@ public class HibernateDatabase implements RelationalDB {
                         }
                         break;
                         case "=": {
-                            cu.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                            Class<?> j = root.get(cell.getColumnKey()).type().getJavaType();
+                            Class<?> s = Objects.requireNonNull(cell.getValue()).getClass();
+                            if (j == UUID.class && s == String.class) {
+                                cu.where(cb.equal(root.get(cell.getColumnKey()), UUID.fromString((String) cell.getValue())));
+                            } else {
+                                cu.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
+                            }
                         }
                         break;
                         case ">": {
                             cu.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case " LIKE ": {
+                            cu.where(cb.like(root.get(cell.getColumnKey()), (String) cell.getValue()));
                         }
                         break;
                     }
@@ -330,15 +394,24 @@ public class HibernateDatabase implements RelationalDB {
                     }
                 }
                 session.createQuery(cu).executeUpdate();
-                if (this.transaction == null) {
-                    transaction.commit();
-                }
             } catch (Exception e) {
-                transaction.rollback();
+                transaction.setRollbackOnly();
                 throw e;
-            } finally {
-                session.close();
             }
+        }
+
+        @Override
+        public void close() {
+            if (managed) return;
+            if (bind) ThreadLocalSessionContext.unbind(sessionFactory);
+            if (transaction.getRollbackOnly()) {
+                transaction.rollback();
+                session.close();
+                return;
+            }
+            session.flush();
+            transaction.commit();
+            session.close();
         }
     }
 }
