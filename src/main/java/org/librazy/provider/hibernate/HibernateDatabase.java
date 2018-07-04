@@ -21,6 +21,7 @@ import org.hibernate.tool.schema.TargetType;
 
 import javax.persistence.FlushModeType;
 import javax.persistence.criteria.*;
+import java.sql.SQLException;
 import java.util.*;
 import java.util.logging.Logger;
 
@@ -32,8 +33,9 @@ public class HibernateDatabase implements RelationalDB {
     private Session session;
     private Transaction transaction;
     private Logger log = Logger.getLogger("HibernateProvider");
+
     HibernateDatabase(Properties properties, List<Class<?>> classes, Logger logger) {
-        if(logger != null) log = logger;
+        if (logger != null) log = logger;
         this.properties = properties;
         this.classes = new ArrayList<>(classes);
         rebuild();
@@ -54,23 +56,27 @@ public class HibernateDatabase implements RelationalDB {
 
     @Override
     public <T> Query<T> query(Class<T> cls) {
-        return new HibernateQuery<>(this, cls, false, false, session, transaction, false);
+        return new HibernateQuery<>(this, cls, false, true, session, transaction, false);
     }
 
     @Override
     public <T> TransactionalQuery<T> transaction(Class<T> cls) {
-        return new HibernateQuery<>(this, cls, true, true, null, null, false);
+        return transaction(cls, false);
     }
 
     @Override
     public <T> TransactionalQuery<T> transaction(Class<T> cls, boolean manualCommit) {
-        return new HibernateQuery<>(this, cls, true, true, null, null, manualCommit);
+        session = sessionFactory.openSession();
+        //session.setFlushMode(FlushModeType.COMMIT);
+        transaction = session.beginTransaction();
+        ThreadLocalSessionContext.bind(this.session);
+        return new HibernateQuery<>(this, cls, false, false, session, transaction, manualCommit);
     }
 
     @Override
     public <T> Query<T> auto(Class<T> cls) {
         if (session != null) {
-            return new AutoQuery<>(new HibernateQuery<>(this, cls, false, false, session, transaction, false));
+            return new AutoQuery<>(new HibernateQuery<>(this, cls, false, true, session, transaction, true));
         } else {
             return new AutoQuery<>(new HibernateQuery<>(this, cls, true, false, null, null, false));
         }
@@ -97,7 +103,6 @@ public class HibernateDatabase implements RelationalDB {
         rebuild();
     }
 
-    @Deprecated
     @Override
     public synchronized void commitTransaction() {
         if (transaction != null && transaction.isActive()) {
@@ -110,19 +115,17 @@ public class HibernateDatabase implements RelationalDB {
         transaction = null;
     }
 
-    @Deprecated
     @Override
     public synchronized void beginTransaction() {
         if (transaction != null) {
             throw new IllegalStateException("Another transaction is in progress");
         }
         session = sessionFactory.openSession();
-        session.setHibernateFlushMode(FlushMode.MANUAL);
-        session.setFlushMode(FlushModeType.COMMIT);
+        //session.setFlushMode(FlushModeType.COMMIT);
         transaction = session.beginTransaction();
+        ThreadLocalSessionContext.bind(this.session);
     }
 
-    @Deprecated
     @Override
     public synchronized void rollbackTransaction() {
         if (transaction != null && transaction.isActive()) {
@@ -161,25 +164,25 @@ public class HibernateDatabase implements RelationalDB {
 
     public class HibernateQuery<T> implements TransactionalQuery<T> {
         private final HashBasedTable<String, String, Object> where = HashBasedTable.create();
+        private final HibernateDatabase database;
         private final Class<T> cls;
+        private final boolean inlineTrans;
         private final boolean managed;
-        private final boolean bind;
         private final boolean manualCommit;
         private final Session session;
         private final Transaction transaction;
         private Map<String, String> columnMapping = new HashMap<>();
 
-        HibernateQuery(HibernateDatabase database, Class<T> cls, boolean newTrans, boolean bind, Session session, Transaction transaction, boolean manualCommit) {
+        HibernateQuery(HibernateDatabase database, Class<T> cls, boolean inlineTrans, boolean managed, Session session, Transaction transaction, boolean manualCommit) {
+            this.database = database;
             this.cls = cls;
-            this.managed = session != null;
-            this.bind = bind;
+            this.inlineTrans = inlineTrans;
+            this.managed = managed;
             this.manualCommit = manualCommit;
-            if (newTrans) {
+            if (inlineTrans) {
                 this.session = database.sessionFactory.openSession();
-                if (bind) ThreadLocalSessionContext.bind(this.session);
                 this.transaction = this.session.beginTransaction();
-                this.session.setHibernateFlushMode(FlushMode.MANUAL);
-                this.session.setFlushMode(FlushModeType.COMMIT);
+                //this.session.setFlushMode(FlushModeType.COMMIT);
             } else {
                 this.session = session == null ? database.sessionFactory.getCurrentSession() : session;
                 this.transaction = transaction == null ? this.session.getTransaction() : transaction;
@@ -260,6 +263,13 @@ public class HibernateDatabase implements RelationalDB {
                             cd.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
                         }
                         break;
+                        case " LIKE ": {
+                            cd.where(cb.like(root.get(cell.getColumnKey()), cell.getValue().toString()));
+                        }
+                        break;
+                        default: {
+                            throw new RuntimeException(new SQLException("Operator not supported"));
+                        }
                     }
                 });
                 session.createQuery(cd).executeUpdate();
@@ -333,6 +343,13 @@ public class HibernateDatabase implements RelationalDB {
                         }
                     }
                     break;
+                    case " LIKE ": {
+                        cq.where(cb.like(root.get(cell.getColumnKey()), cell.getValue().toString()));
+                    }
+                    break;
+                    default: {
+                        throw new RuntimeException(new SQLException("Operator not supported"));
+                    }
                 }
             });
             return cq;
@@ -361,6 +378,10 @@ public class HibernateDatabase implements RelationalDB {
                         q.where(cb.gt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
                     }
                     break;
+                    case " LIKE ": {
+                        q.where(cb.like(root.get(cell.getColumnKey()), cell.getValue().toString()));
+                    }
+                    break;
                     case "=": {
                         Class<?> t = root.get(cell.getColumnKey()).type().getJavaType();
                         Class<?> s = Objects.requireNonNull(cell.getValue()).getClass();
@@ -371,6 +392,9 @@ public class HibernateDatabase implements RelationalDB {
                         }
                     }
                     break;
+                    default: {
+                        throw new RuntimeException(new SQLException("Operator not supported"));
+                    }
                 }
             });
             q.select(cb.count(root));
@@ -412,9 +436,12 @@ public class HibernateDatabase implements RelationalDB {
                         }
                         break;
                         case " LIKE ": {
-                            cu.where(cb.like(root.get(cell.getColumnKey()), (String) cell.getValue()));
+                            cu.where(cb.like(root.get(cell.getColumnKey()), Objects.requireNonNull(cell.getValue()).toString()));
                         }
                         break;
+                        default: {
+                            throw new RuntimeException(new SQLException("Operator not supported"));
+                        }
                     }
                 });
                 MetamodelImplementor metamodel = (MetamodelImplementor) sessionFactory.getMetamodel();
@@ -436,15 +463,22 @@ public class HibernateDatabase implements RelationalDB {
         @Override
         public void close() {
             if (managed) return;
-            if (bind) ThreadLocalSessionContext.unbind(sessionFactory);
+            ThreadLocalSessionContext.unbind(sessionFactory);
             if (transaction.getRollbackOnly() || manualCommit) {
-                transaction.rollback();
-                session.close();
+                if (inlineTrans) {
+                    transaction.rollback();
+                    session.close();
+                } else {
+                    database.rollbackTransaction();
+                }
                 return;
             }
-            session.flush();
-            transaction.commit();
-            session.close();
+            if (inlineTrans) {
+                transaction.commit();
+                session.close();
+            } else {
+                database.commitTransaction();
+            }
         }
     }
 }

@@ -39,7 +39,6 @@ public class HibernateProvider implements DatabaseProvider {
         System.setProperty("com.mchange.v2.log.MLog", "com.mchange.v2.log.FallbackMLog");
         System.setProperty("com.mchange.v2.log.FallbackMLog.DEFAULT_CUTOFF_LEVEL", "WARNING");
         Class<?>[] classes = plugin == null ? (Class<?>[]) map.get("classes") : DatabaseUtils.scanClasses(plugin, map, Entity.class);
-
         return new HibernateDatabase(props, Arrays.asList(classes == null? new Class<?>[0] : classes), plugin != null ? plugin.getLogger() : null);
     }
 }

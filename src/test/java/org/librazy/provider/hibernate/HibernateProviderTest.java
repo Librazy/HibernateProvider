@@ -25,6 +25,7 @@ public class HibernateProviderTest {
         conf.put("password", "");
         conf.put("jdbc", "org.h2.Driver");
         conf.put("url", "jdbc:h2:mem:app_db;");
+        conf.put("dialect", "org.hibernate.dialect.H2Dialect");
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
         db.connect();
         db.close();
@@ -37,6 +38,7 @@ public class HibernateProviderTest {
         conf.put("password", "");
         conf.put("jdbc", "org.h2.Driver");
         conf.put("url", "jdbc:h2:mem:app_db;");
+        conf.put("dialect", "org.hibernate.dialect.H2Dialect");
         Class<?>[] classes = new Class<?>[]{TestEntity.class};
         conf.put("classes", classes);
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
@@ -51,6 +53,7 @@ public class HibernateProviderTest {
         conf.put("password", "");
         conf.put("jdbc", "org.h2.Driver");
         conf.put("url", "jdbc:h2:mem:app_db;");
+        conf.put("dialect", "org.hibernate.dialect.H2Dialect");
         Class<?>[] classes = new Class<?>[]{TestEntity.class};
         conf.put("classes", classes);
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
@@ -67,7 +70,7 @@ public class HibernateProviderTest {
         conf.put("password", "");
         conf.put("jdbc", "org.h2.Driver");
         conf.put("url", "jdbc:h2:mem:app_db;");
-        conf.put("classes", null);
+        conf.put("dialect", "org.hibernate.dialect.H2Dialect");
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
         db.connect();
         db.createTable(TestEntity.class);
@@ -88,7 +91,7 @@ public class HibernateProviderTest {
         conf.put("password", "");
         conf.put("jdbc", "org.h2.Driver");
         conf.put("url", "jdbc:h2:mem:app_db;");
-        conf.put("classes", null);
+        conf.put("dialect", "org.hibernate.dialect.H2Dialect");
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
         db.connect();
         db.createTable(TestEntity.class);
@@ -112,7 +115,7 @@ public class HibernateProviderTest {
         conf.put("password", "");
         conf.put("jdbc", "org.h2.Driver");
         conf.put("url", "jdbc:h2:mem:app_db;");
-        conf.put("classes", null);
+        conf.put("dialect", "org.hibernate.dialect.H2Dialect");
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
         db.connect();
         db.createTable(TestEntity.class);
@@ -128,9 +131,9 @@ public class HibernateProviderTest {
         db.query(TestEntity.class).insert(testEntity3);
         db.query(TestEntity.class).insert(testEntity4);
         db.query(TestEntity.class).whereEq("test", "t2").update(testEntity5);
-        Assert.assertEquals(db.query(TestEntity.class).whereEq("test", "t2").count(), 2);
+        Assert.assertEquals(2, db.query(TestEntity.class).whereEq("test", "t2").count());
         db.commitTransaction();
-        Assert.assertEquals(db.auto(TestEntity.class).whereEq("test", "t2").select().stream().filter(s -> s.getUuid().equals(uid)).count(), 2);
+        Assert.assertEquals(2, db.auto(TestEntity.class).whereEq("test", "t2").select().stream().filter(s -> s.getUuid().equals(uid)).count());
         db.close();
     }
 
@@ -141,7 +144,7 @@ public class HibernateProviderTest {
         conf.put("password", "");
         conf.put("jdbc", "org.h2.Driver");
         conf.put("url", "jdbc:h2:mem:app_db;");
-        conf.put("classes", null);
+        conf.put("dialect", "org.hibernate.dialect.H2Dialect");
         RelationalDB db = DatabaseUtils.get("hibernate", null, conf);
         db.connect();
         db.createTable(TestEntity.class);
@@ -156,7 +159,7 @@ public class HibernateProviderTest {
             db.query(TestEntity.class).insert(testEntity4);
             db.query(TestEntity.class).whereEq("test", "t2").delete();
             Assert.assertEquals(db.query(TestEntity.class).whereEq("test", "t2").count(), 0);
-            Assert.assertEquals(transaction.select().size(), 2);
+            Assert.assertEquals(2, transaction.select().size());
         }
         db.close();
     }
