@@ -21,10 +21,6 @@ import org.hibernate.tool.schema.TargetType;
 
 import javax.persistence.FlushModeType;
 import javax.persistence.criteria.*;
-import java.io.PrintStream;
-import java.io.ByteArrayOutputStream;
-import java.io.UnsupportedEncodingException;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.logging.Logger;
 
@@ -100,7 +96,6 @@ public class HibernateDatabase implements RelationalDB {
     @Override
     public synchronized void commitTransaction() {
         if (transaction != null && transaction.isActive()) {
-            session.flush();
             transaction.commit();
         } else {
             throw new IllegalStateException("No transaction found in this database or is not active");
@@ -242,8 +237,16 @@ public class HibernateDatabase implements RelationalDB {
                             }
                         }
                         break;
-                        case ">": {
+                        case ">=": {
                             cd.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case "<=": {
+                            cd.where(cb.le(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case ">": {
+                            cd.where(cb.gt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
                         }
                         break;
                         case "<": {
@@ -263,7 +266,6 @@ public class HibernateDatabase implements RelationalDB {
         public void insert(T t) {
             try {
                 session.persist(t);
-                session.flush();
             } catch (Exception e) {
                 transaction.setRollbackOnly();
                 throw e;
@@ -298,8 +300,16 @@ public class HibernateDatabase implements RelationalDB {
             Root<T> root = cq.from(cls);
             where.cellSet().forEach(cell -> {
                 switch (Objects.requireNonNull(cell.getRowKey())) {
-                    case ">": {
+                    case ">=": {
                         cq.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                    }
+                    break;
+                    case "<=": {
+                        cq.where(cb.le(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                    }
+                    break;
+                    case ">": {
+                        cq.where(cb.gt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
                     }
                     break;
                     case "<": {
@@ -328,12 +338,20 @@ public class HibernateDatabase implements RelationalDB {
             Root<T> root = q.from(cls);
             where.cellSet().forEach(cell -> {
                 switch (Objects.requireNonNull(cell.getRowKey())) {
+                    case "<=": {
+                        q.where(cb.le(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                    }
+                    break;
+                    case ">=": {
+                        q.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                    }
+                    break;
                     case "<": {
                         q.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
                     }
                     break;
                     case ">": {
-                        q.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        q.where(cb.gt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
                     }
                     break;
                     case "=": {
@@ -360,8 +378,20 @@ public class HibernateDatabase implements RelationalDB {
                 Root<T> root = cu.from(cls);
                 where.cellSet().forEach(cell -> {
                     switch (Objects.requireNonNull(cell.getRowKey())) {
+                        case "<=": {
+                            cu.where(cb.le(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case ">=": {
+                            cu.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
                         case "<": {
                             cu.where(cb.lt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
+                        }
+                        break;
+                        case ">": {
+                            cu.where(cb.gt(root.get(cell.getColumnKey()), (Number) cell.getValue()));
                         }
                         break;
                         case "=": {
@@ -372,10 +402,6 @@ public class HibernateDatabase implements RelationalDB {
                             } else {
                                 cu.where(cb.equal(root.get(cell.getColumnKey()), cell.getValue()));
                             }
-                        }
-                        break;
-                        case ">": {
-                            cu.where(cb.ge(root.get(cell.getColumnKey()), (Number) cell.getValue()));
                         }
                         break;
                         case " LIKE ": {
