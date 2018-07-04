@@ -54,20 +54,25 @@ public class HibernateDatabase implements RelationalDB {
 
     @Override
     public <T> Query<T> query(Class<T> cls) {
-        return new HibernateQuery<>(this, cls, false, false, session, transaction);
+        return new HibernateQuery<>(this, cls, false, false, session, transaction, false);
     }
 
     @Override
     public <T> TransactionalQuery<T> transaction(Class<T> cls) {
-        return new HibernateQuery<>(this, cls, true, true, null, null);
+        return new HibernateQuery<>(this, cls, true, true, null, null, false);
+    }
+
+    @Override
+    public <T> TransactionalQuery<T> transaction(Class<T> cls, boolean manualCommit) {
+        return new HibernateQuery<>(this, cls, true, true, null, null, manualCommit);
     }
 
     @Override
     public <T> Query<T> auto(Class<T> cls) {
         if (session != null) {
-            return new AutoQuery<>(new HibernateQuery<>(this, cls, false, false, session, transaction));
+            return new AutoQuery<>(new HibernateQuery<>(this, cls, false, false, session, transaction, false));
         } else {
-            return new AutoQuery<>(new HibernateQuery<>(this, cls, true, false, null, null));
+            return new AutoQuery<>(new HibernateQuery<>(this, cls, true, false, null, null, false));
         }
     }
 
@@ -159,14 +164,16 @@ public class HibernateDatabase implements RelationalDB {
         private final Class<T> cls;
         private final boolean managed;
         private final boolean bind;
+        private final boolean manualCommit;
         private final Session session;
         private final Transaction transaction;
         private Map<String, String> columnMapping = new HashMap<>();
 
-        HibernateQuery(HibernateDatabase database, Class<T> cls, boolean newTrans, boolean bind, Session session, Transaction transaction) {
+        HibernateQuery(HibernateDatabase database, Class<T> cls, boolean newTrans, boolean bind, Session session, Transaction transaction, boolean manualCommit) {
             this.cls = cls;
             this.managed = session != null;
             this.bind = bind;
+            this.manualCommit = manualCommit;
             if (newTrans) {
                 this.session = database.sessionFactory.openSession();
                 if (bind) ThreadLocalSessionContext.bind(this.session);
@@ -191,7 +198,7 @@ public class HibernateDatabase implements RelationalDB {
         }
 
         @Override
-        public TransactionalQuery<T> clear() {
+        public TransactionalQuery<T> reset() {
             where.clear();
             return this;
         }
@@ -430,7 +437,7 @@ public class HibernateDatabase implements RelationalDB {
         public void close() {
             if (managed) return;
             if (bind) ThreadLocalSessionContext.unbind(sessionFactory);
-            if (transaction.getRollbackOnly()) {
+            if (transaction.getRollbackOnly() || manualCommit) {
                 transaction.rollback();
                 session.close();
                 return;
